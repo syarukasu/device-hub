@@ -75,7 +75,11 @@ fn main() {
                 if let Some(tray) = tray::Tray::install(window) {
                     window.on_window_should_close(cx, move |_, _| tray.close_or_hide());
                 }
-                cx.new(|cx| Shell::new(window, cx))
+                let root = cx.new(|cx| Shell::new(window, cx));
+                #[cfg(windows)]
+                cx.observe(&root, |shell, cx| tray::update_battery(shell.read(cx)))
+                    .detach();
+                root
             })
             .expect("failed to open window");
             cx.on_window_closed(|cx, _| {

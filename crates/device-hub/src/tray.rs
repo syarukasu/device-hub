@@ -1,8 +1,12 @@
 //! Windows logon launch, notification-area menu and single-instance activation.
 
+mod badge;
+
+use devhub_core::{DeviceInfo, DeviceKind};
+use device_hub::app::{Route, Shell};
 use gpui_kit::Window;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::mem::size_of;
 use std::ptr::{null, null_mut};
 use std::time::{Duration, Instant};
@@ -14,7 +18,8 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
+    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
+    NOTIFYICONDATAW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -29,6 +34,64 @@ const QUIT: i32 = 2;
 thread_local! {
     static QUITTING: Cell<bool> = const { Cell::new(false) };
     static TASKBAR_CREATED: Cell<u32> = const { Cell::new(0) };
+    static TRAY_WINDOW: Cell<HWND> = const { Cell::new(null_mut()) };
+    static BATTERY: RefCell<Option<Badge>> = const { RefCell::new(None) };
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct Badge {
+    name: String,
+    percent: u8,
+    charging: bool,
+    asleep: bool,
+}
+
+pub fn update_battery(shell: &Shell) {
+    let window = TRAY_WINDOW.get();
+    if window.is_null() {
+        return;
+    }
+    let next = battery_mouse(shell).and_then(|device| {
+        let battery = device.battery?;
+        Some(Badge {
+            name: device.name.clone(),
+            percent: battery.percent?.min(100),
+            charging: battery.charging,
+            asleep: device.asleep,
+        })
+    });
+    let has_changed = BATTERY.with(|current| {
+        let mut current = current.borrow_mut();
+        if *current == next {
+            false
+        } else {
+            *current = next;
+            true
+        }
+    });
+    if has_changed {
+        // SAFETY: GPUI calls this observer on the thread that owns the tray.
+        unsafe { publish_icon(window, true) };
+    }
+}
+
+fn battery_mouse(shell: &Shell) -> Option<&DeviceInfo> {
+    if shell.hub.demo {
+        return None;
+    }
+    let selected = if let Route::Device(id) = &shell.route {
+        Some(id)
+    } else {
+        None
+    };
+    shell
+        .hub
+        .devices
+        .iter()
+        .filter(|device| {
+            device.kind == DeviceKind::Mouse && device.battery.is_some_and(|b| b.percent.is_some())
+        })
+        .min_by_key(|device| (device.asleep, selected != Some(&device.id), &device.id.0))
 }
 
 pub struct Instance(HANDLE);
@@ -81,7 +144,8 @@ pub struct Tray {
 
 impl Tray {
     pub fn install(window: &Window) -> Option<Self> {
-        let RawWindowHandle::Win32(handle) = HasWindowHandle::window_handle(window).ok()?.as_raw() else {
+        let RawWindowHandle::Win32(handle) = HasWindowHandle::window_handle(window).ok()?.as_raw()
+        else {
             return None;
         };
         let main = handle.hwnd.get() as HWND;
@@ -119,7 +183,8 @@ impl Tray {
             }
             SetWindowLongPtrW(tray, GWLP_USERDATA, main as isize);
             TASKBAR_CREATED.set(RegisterWindowMessageW(w!("TaskbarCreated")));
-            ensure_icon(tray);
+            TRAY_WINDOW.set(tray);
+            publish_icon(tray, false);
             Some(Self { tray, main })
         }
     }
@@ -136,6 +201,7 @@ impl Tray {
 
 impl Drop for Tray {
     fn drop(&mut self) {
+        TRAY_WINDOW.set(null_mut());
         // SAFETY: The tray window belongs to this thread and owns the Shell icon.
         unsafe { DestroyWindow(self.tray) };
     }
@@ -156,18 +222,44 @@ fn show(hwnd: HWND) {
     }
 }
 
-unsafe fn ensure_icon(tray: HWND) {
+unsafe fn publish_icon(tray: HWND, update: bool) {
     let mut data = icon_data(tray);
     data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     data.uCallbackMessage = TRAY_EVENT;
-    data.hIcon = LoadIconW(GetModuleHandleW(null()), 1usize as *const u16);
+    let battery = BATTERY.with(|status| status.borrow().clone());
+    let badge = battery.as_ref().map_or(null_mut(), |status| {
+        badge::icon(status.percent, status.charging, status.asleep)
+    });
+    data.hIcon = badge;
+    if data.hIcon.is_null() {
+        data.hIcon = LoadIconW(GetModuleHandleW(null()), 1usize as *const u16);
+    }
     if data.hIcon.is_null() {
         data.hIcon = LoadIconW(null_mut(), IDI_APPLICATION);
     }
-    for (dst, src) in data.szTip.iter_mut().zip("Device HUB".encode_utf16()) {
+    let tip = battery.map_or_else(
+        || "Device HUB".into(),
+        |status| {
+            let suffix = if status.asleep {
+                "（前回の残量）"
+            } else if status.charging {
+                "（充電中）"
+            } else {
+                ""
+            };
+            format!("Device HUB · {} · {}%{suffix}", status.name, status.percent)
+        },
+    );
+    let tip_len = data.szTip.len() - 1;
+    for (dst, src) in data.szTip[..tip_len].iter_mut().zip(tip.encode_utf16()) {
         *dst = src;
     }
-    if Shell_NotifyIconW(NIM_ADD, &data) == 0 {
+    let published = (update && Shell_NotifyIconW(NIM_MODIFY, &data) != 0)
+        || Shell_NotifyIconW(NIM_ADD, &data) != 0;
+    if !badge.is_null() {
+        DestroyIcon(badge);
+    }
+    if !published {
         // Explorer may not have started yet during logon.
         SetTimer(tray, RETRY_ICON, 2500, None);
     } else {
@@ -198,12 +290,12 @@ unsafe extern "system" fn tray_proc(
             WM_RBUTTONUP => tray_menu(hwnd, main),
             _ => {}
         },
-        WM_TIMER if wparam == RETRY_ICON => ensure_icon(hwnd),
+        WM_TIMER if wparam == RETRY_ICON => publish_icon(hwnd, false),
         WM_DESTROY => {
             KillTimer(hwnd, RETRY_ICON);
             Shell_NotifyIconW(NIM_DELETE, &icon_data(hwnd));
         }
-        _ if msg != 0 && msg == TASKBAR_CREATED.get() => ensure_icon(hwnd),
+        _ if msg != 0 && msg == TASKBAR_CREATED.get() => publish_icon(hwnd, false),
         _ => return DefWindowProcW(hwnd, msg, wparam, lparam),
     }
     0
