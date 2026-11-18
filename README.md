@@ -35,6 +35,7 @@ with a Liquid Glass design.
 | HTS Plus Pro (wired + 2.4GHz dongle) | All settings incl. Rapid Trigger |
 | SU66 Max (Keebforce/Everglide) | Keymap, per-key perf, lighting, macros, live travel |
 | TP55 USB DAC | Parametric EQ |
+| Logicool PRO X3 SUPERSTRIKE | LIGHTSPEED, DPI, report rate, battery, onboard profile selection, and analog click tuning. [HID++ notes](docs/LOGITECH_HIDPP.md) |
 
 Other models using the same protocols (mouse.fit report-8/EEPROM, xsyd) are
 detected automatically by capability, not by device name.
@@ -55,6 +56,10 @@ cargo test --workspace
 
 `device-hub.exe` is a single portable binary — fonts and the icon are embedded;
 settings live in `%APPDATA%\DeviceHub\`.
+
+On Windows, use `device-hub.exe --tray` to start in the notification area.
+To install it for the current user and start it at sign-in, run
+`./scripts/install-resident.ps1 -Executable ./target/release/device-hub.exe` after the release build.
 
 ### OBS plugin
 
@@ -135,6 +140,10 @@ UI は GPUI + Liquid Glass デザイン。
 
 HTS Plus Pro (有線+ドングル) · SU66 Max · TP55 USB DAC
 (同プロトコルの他機種も caps ベースで自動検出)
+
+Logicool PRO X3 SUPERSTRIKE の LIGHTSPEED 接続でも実機確認済みです。
+対応設定、初代 PRO Wireless の確認状況、ログオン時の常駐設定は
+[Logicool HID++ 対応](docs/LOGITECH_HIDPP.md) を参照してください。
 
 ### ビルド
 

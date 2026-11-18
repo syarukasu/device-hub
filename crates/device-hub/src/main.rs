@@ -21,11 +21,20 @@ use device_hub::{prefs::Prefs, theme};
 use gpui_kit::component::{Theme, ThemeMode, TitleBar};
 use gpui_kit::*;
 
+#[cfg(windows)]
+mod tray;
+
 fn main() {
+    let start_hidden = cfg!(windows) && std::env::args_os().any(|arg| arg == "--tray");
+    #[cfg(windows)]
+    let Some(_instance) = tray::Instance::acquire(start_hidden) else {
+        return;
+    };
+
     device_hub::rawinput::start(); // 実測ポーリングレート計測 (Raw Input)
     gpui_kit::application()
         .with_assets(gpui_kit::assets::AllAssets)
-        .run(|cx| {
+        .run(move |cx| {
             gpui_kit::init(cx);
             // フォント登録は選択の後 — 使う書体だけ載せて常駐メモリを削る。
             let prefs = Prefs::load();
@@ -45,6 +54,8 @@ fn main() {
             clear_component_chrome(cx);
 
             let mut options = TitleBar::window_options();
+            options.show = !start_hidden;
+            options.focus = !start_hidden;
             options.window_bounds = Some(WindowBounds::Windowed(Bounds::centered(
                 None,
                 size(px(1320.), px(840.)),
@@ -60,6 +71,10 @@ fn main() {
             }
 
             gpui_kit::open_window(options, cx, |window, cx| {
+                #[cfg(windows)]
+                if let Some(tray) = tray::Tray::install(window) {
+                    window.on_window_should_close(cx, move |_, _| tray.close_or_hide());
+                }
                 cx.new(|cx| Shell::new(window, cx))
             })
             .expect("failed to open window");

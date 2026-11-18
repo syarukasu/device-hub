@@ -147,8 +147,14 @@ impl Channel {
         }
     }
 
-    /// `timeout_ms` 以内の IN レポート 1 件 (report ID は捨てて本体だけ返す)。
+    /// `timeout_ms` 以内の IN レポート 1 件。番号付きなら report ID を含む。
     pub fn recv(&self, timeout_ms: i32) -> HubResult<Vec<u8>> {
+        self.recv_optional(timeout_ms)?
+            .ok_or_else(|| HubError::Protocol("read timeout".into()))
+    }
+
+    /// タイムアウトを I/O エラーと区別して返す。
+    pub fn recv_optional(&self, timeout_ms: i32) -> HubResult<Option<Vec<u8>>> {
         match &self.inner {
             Inner::Hid(dev) => {
                 let mut buf = vec![0u8; self.in_report_len];
@@ -157,20 +163,16 @@ impl Channel {
                     .unwrap_or_else(|p| p.into_inner())
                     .read_timeout(&mut buf, timeout_ms)
                     .map_err(|e| HubError::Io(format!("hid read: {e}")))?;
-                if n == 0 {
-                    return Err(HubError::Protocol("read timeout".into()));
-                }
                 // unnumbered report は buf[0] がデータ先頭。numbered なら buf[0] が report ID。
                 // 判別は呼び側のプロトコルが担うので生のまま返す。
-                Ok(buf[..n].to_vec())
+                Ok((n != 0).then(|| buf[..n].to_vec()))
             }
             #[cfg(test)]
-            Inner::Mock(m) => m
+            Inner::Mock(m) => Ok(m
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .replies
-                .pop_front()
-                .ok_or_else(|| HubError::Protocol("mock: no reply".into())),
+                .pop_front()),
         }
     }
 

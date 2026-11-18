@@ -52,12 +52,49 @@ const fn mf(
     }
 }
 
+const fn logitech(
+    pid: u16,
+    usage_page: u16,
+    usage: u16,
+    transport: Transport,
+    x3: bool,
+    verified: bool,
+) -> KnownDevice {
+    KnownDevice {
+        vid: 0x046D,
+        pid,
+        usage_page: Some(usage_page),
+        usage: Some(usage),
+        kind: DeviceKind::Mouse,
+        vendor: "Logicool",
+        model: if x3 {
+            "pro-x3-superstrike"
+        } else {
+            "pro-wireless"
+        },
+        name: if x3 {
+            "PRO X3 SUPERSTRIKE"
+        } else {
+            "PRO Wireless"
+        },
+        transport,
+        driver: DriverKind::Logitech,
+        verified,
+    }
+}
+
 /// 対応表。新デバイスはここへ追加する。
 ///
 /// mouse.fit の PID は `https://www.mouse.fit/Config/env-models.json` (2026-11 取得) の
 /// `PIDWired` / `PIDWireless` / `PIDWireless4K8K` から。usage_page/usage は
 /// HTS Plus Pro 実機 (0xFF02 / 0x02) と同じと仮定 — **他機種は実機で要確認**。
 pub const KNOWN: &[KnownDevice] = &[
+    logitech(0xC54F, 0xFF43, 0x0302, Transport::Wireless24G, true, true),
+    logitech(0xC0A9, 0xFF43, 0x0302, Transport::Wired, true, false),
+    logitech(0xC539, 0xFF00, 0x0002, Transport::Wireless24G, false, false),
+    logitech(0xC539, 0xFF43, 0x0202, Transport::Wireless24G, false, false),
+    logitech(0xC088, 0xFF00, 0x0002, Transport::Wired, false, false),
+    logitech(0xC088, 0xFF43, 0x0202, Transport::Wired, false, false),
     // ---------------------------------------------------------------- キーボード
     KnownDevice {
         vid: 0x1CA6,

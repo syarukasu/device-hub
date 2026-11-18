@@ -35,6 +35,7 @@ pub enum Msg {
     OpenFailed {
         id: DeviceId,
         err: String,
+        retry: bool,
     },
     State {
         id: DeviceId,
@@ -150,6 +151,8 @@ pub struct Session {
     pub caps: Option<Capabilities>,
     pub state: Option<DeviceState>,
     pub status: Status,
+    /// 無線の一時切断や同じパスでの差し直しは次の列挙で開き直す。
+    retry_open: bool,
     /// 書き込み待ちの変更数 (ヘッダの同期インジケーター)。
     pub pending: usize,
     /// 構成切替+全読み直しの最中 — 構成内の編集は受け付けない。
@@ -345,6 +348,7 @@ impl Hub {
                 low_battery_warned: false,
                 read_notify: notify,
                 switching_profile: false,
+                retry_open: false,
                 switch_failed: false,
                 submit_seq: 0,
                 read_seq: 0,
@@ -626,8 +630,13 @@ impl Hub {
                     .map(|d| d.id.clone())
                     .collect();
                 for id in ids {
-                    if !self.sessions.contains_key(&id) {
-                        self.open(&id, false);
+                    match self.sessions.get_mut(&id) {
+                        None => self.open(&id, false),
+                        Some(s) if s.retry_open && !matches!(s.status, Status::Opening) => {
+                            s.status = Status::Opening;
+                            send_open(s);
+                        }
+                        _ => {}
                     }
                 }
                 None
@@ -650,6 +659,7 @@ impl Hub {
                     }
                     s.info = info;
                     s.caps = Some(*caps);
+                    s.retry_open = false;
                     send_read(s);
                     // 軸名を裏で取る (ベンダー API、失敗しても何も変わらない)。
                     if let (Some(bid), Some(pc)) = (
@@ -702,9 +712,14 @@ impl Hub {
                 }
                 None
             }
-            Msg::OpenFailed { id, err } => {
+            Msg::OpenFailed { id, err, retry } => {
                 if let Some(s) = self.sessions.get_mut(&id) {
                     s.status = Status::Failed(err);
+                    s.retry_open = retry;
+                    if retry {
+                        s.state = None;
+                        s.info.asleep = s.info.transport == Transport::Wireless24G;
+                    }
                 }
                 None
             }
@@ -1053,6 +1068,7 @@ fn worker(
                     Err(e) => send(Msg::OpenFailed {
                         id: id.clone(),
                         err: e.to_string(),
+                        retry: matches!(e, HubError::Disconnected),
                     }),
                 },
                 Job::Read => match driver.as_ref().map(|d| d.read()) {
@@ -1061,14 +1077,20 @@ fn worker(
                         state: Box::new(st),
                     }),
                     Some(Err(e)) => {
-                        if matches!(e, devhub_core::backend::HubError::Disconnected) {
+                        if matches!(e, HubError::Disconnected) {
                             backend.invalidate(&id);
                             driver = None; // 古いハンドルを捨て、再オープンで取り直す。
+                            send(Msg::OpenFailed {
+                                id: id.clone(),
+                                err: e.to_string(),
+                                retry: true,
+                            })
+                        } else {
+                            send(Msg::ReadFailed {
+                                id: id.clone(),
+                                err: e.to_string(),
+                            })
                         }
-                        send(Msg::ReadFailed {
-                            id: id.clone(),
-                            err: e.to_string(),
-                        })
                     }
                     None => true,
                 },
@@ -1086,6 +1108,11 @@ fn worker(
                     if dead {
                         backend.invalidate(&id);
                         driver = None;
+                        send(Msg::OpenFailed {
+                            id: id.clone(),
+                            err: HubError::Disconnected.to_string(),
+                            retry: true,
+                        });
                     }
                     send(Msg::Applied {
                         id: id.clone(),
@@ -1155,6 +1182,15 @@ fn worker(
                         id: id.clone(),
                         battery: b,
                     }),
+                    Some(Err(HubError::Disconnected)) => {
+                        backend.invalidate(&id);
+                        driver = None;
+                        send(Msg::OpenFailed {
+                            id: id.clone(),
+                            err: HubError::Disconnected.to_string(),
+                            retry: true,
+                        })
+                    }
                     _ => true,
                 },
                 Job::PollRate => {

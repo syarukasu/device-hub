@@ -74,6 +74,8 @@ pub enum DriverKind {
     Lamzu,
     /// 未割り当て (検出だけできる)。
     Unsupported,
+    /// Logitech マウス・LIGHTSPEED レシーバーの HID++ 2.0。
+    Logitech,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
