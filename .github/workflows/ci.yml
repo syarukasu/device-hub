@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 # 同じブランチへの連続 push では古い run を自動キャンセル。
 concurrency:
@@ -23,9 +24,16 @@ jobs:
         run: cargo test --workspace --locked
       - name: Release build
         run: cargo build --release --locked -p device-hub -p devhub-obs
+      - name: Build Logitech hardware diagnostic
+        run: cargo build --release --locked -p devhub-hid --example logitech_check
       - name: Stage Windows distribution
         run: ./scripts/package-windows.ps1
       - uses: actions/upload-artifact@v4
         with:
           name: device-hub-windows-x64
           path: dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: logitech-hardware-diagnostic-windows-x64
+          path: target/release/examples/logitech_check.exe
+          if-no-files-found: error
